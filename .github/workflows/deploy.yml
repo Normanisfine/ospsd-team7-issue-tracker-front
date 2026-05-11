@@ -23,9 +23,10 @@ jobs:
       # resolves to "ospsd-team7-issue-tracker-front".
       NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
       # Backend URL is read at build time and inlined into the bundle.
-      # Set repository variable NEXT_PUBLIC_API_BASE_URL (Settings →
-      # Secrets and variables → Actions → Variables) to override.
-      NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000' }}
+      # Defaults to the Render-hosted FastAPI service; override by setting
+      # repository variable NEXT_PUBLIC_API_BASE_URL (Settings → Secrets
+      # and variables → Actions → Variables).
+      NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL || 'https://ospsd-team7-issue-tracker.onrender.com' }}
     steps:
       - uses: actions/checkout@v4
 
