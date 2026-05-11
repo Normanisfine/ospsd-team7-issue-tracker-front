@@ -12,10 +12,11 @@ import { api } from "@/lib/api";
 /**
  * Thin header showing Trello auth state + "Connect" / "Sign out" actions.
  *
- * On first load there's no session token; user clicks "Connect Trello",
- * which kicks off the backend's /auth/login redirect chain. Trello
- * eventually redirects back with a session_token in the URL; we pick it
- * up and stash it in localStorage, then reload.
+ * On first load there's no session token; the user clicks "Connect Trello"
+ * which opens the backend's /auth/login flow in a new tab. After Trello
+ * redirects back, that tab stashes the session_token in localStorage; the
+ * original tab picks up the change via the `storage` event and refreshes
+ * its UI without a manual reload.
  */
 export function SessionBar({ onChange }: { onChange: () => void }) {
   const [token, setToken] = useState<string | null>(null);
@@ -23,7 +24,8 @@ export function SessionBar({ onChange }: { onChange: () => void }) {
   const [manualValue, setManualValue] = useState("");
 
   useEffect(() => {
-    // Pick up ?session_token= from the URL after OAuth callback.
+    // Pick up ?session_token= from the URL after OAuth callback. This
+    // runs in the new tab when Trello redirects back to us.
     const url = new URL(window.location.href);
     const fromUrl = url.searchParams.get("session_token");
     if (fromUrl) {
@@ -32,7 +34,18 @@ export function SessionBar({ onChange }: { onChange: () => void }) {
       window.history.replaceState({}, "", url.toString());
     }
     setToken(getSessionToken());
-  }, []);
+
+    // Cross-tab sync: the `storage` event fires in every OTHER tab when
+    // localStorage changes, so the original tab updates instantly the
+    // moment the OAuth tab writes the token.
+    function onStorage(e: StorageEvent) {
+      if (e.key !== "ospsd_session_token") return;
+      setToken(getSessionToken());
+      onChange();
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [onChange]);
 
   function handleSignOut() {
     clearSessionToken();
@@ -83,6 +96,8 @@ export function SessionBar({ onChange }: { onChange: () => void }) {
             <>
               <a
                 href={api.authLoginUrl()}
+                target="_blank"
+                rel="noopener"
                 className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-accent hover:bg-accentHover text-white transition-colors"
               >
                 Connect Trello <ExternalLink size={12} />
