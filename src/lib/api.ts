@@ -48,11 +48,27 @@ export interface AIChatResponse {
   truncated: boolean;
 }
 
+export interface AIProviderHealth {
+  status: "ok" | "unconfigured" | string;
+  model: string;
+  api_key_loaded: boolean;
+}
+
 export interface AIHealthResponse {
   status: "ok" | "unconfigured" | string;
+  /** Active provider per server-side AI_PROVIDER env var. */
+  provider?: string;
+  /** Model id for the active provider (empty string when unconfigured). */
   model: string;
   allow_mutations: boolean;
   api_key_loaded: boolean;
+  /**
+   * Per-provider probe (`claude`, `openai`). Populated on every health call so
+   * clients that override `AI_PROVIDER` per request (via `X-AI-Provider` on
+   * `POST /ai/chat`) can display the right model without hardcoding it.
+   * Optional for resilience against older backends.
+   */
+  providers?: Partial<Record<AIProvider, AIProviderHealth>>;
 }
 
 // ---------------------------------------------------------------------- //
@@ -100,6 +116,14 @@ async function request<T>(
 // ---------------------------------------------------------------------- //
 
 export type IssueStatus = "to_do" | "in_progress" | "completed";
+
+/**
+ * Per-request override for the LLM stack used by POST /ai/chat. When set,
+ * the wire header `X-AI-Provider` is forwarded to the backend (which accepts
+ * lowercase `claude` or `openai`, case-insensitive). Leave undefined to let
+ * the server use its configured `AI_PROVIDER` default.
+ */
+export type AIProvider = "claude" | "openai";
 
 export const api = {
   authLoginUrl: () => `${API_BASE}/auth/login`,
@@ -156,13 +180,20 @@ export const api = {
 
   // AI
   aiHealth: () => request<AIHealthResponse>("/ai/health", {}, { auth: false }),
-  aiChat: (payload: {
-    prompt: string;
-    board_id?: string | null;
-    channel_id?: string | null;
-  }) =>
-    request<AIChatResponse>("/ai/chat", {
+  aiChat: (
+    payload: {
+      prompt: string;
+      board_id?: string | null;
+      channel_id?: string | null;
+    },
+    provider?: AIProvider,
+  ) => {
+    const headers: Record<string, string> = {};
+    if (provider) headers["X-AI-Provider"] = provider;
+    return request<AIChatResponse>("/ai/chat", {
       method: "POST",
       body: JSON.stringify(payload),
-    }),
+      headers,
+    });
+  },
 };

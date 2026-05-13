@@ -74,7 +74,7 @@ export function SessionBar({ onChange }: { onChange: () => void }) {
               Team 7 · Issue Tracker
             </div>
             <div className="text-xs text-muted">
-              Trello backend · Claude AI assistant
+              Trello backend · Claude/OpenAI AI assistant
             </div>
           </div>
         </div>

@@ -16,6 +16,7 @@ import {
   api,
   type AIChatResponse,
   type AIHealthResponse,
+  type AIProvider,
   type AIToolAction,
 } from "@/lib/api";
 
@@ -52,6 +53,91 @@ const MUTATING_TOOLS = new Set<string>([
 ]);
 
 /**
+ * UI-level provider selection: `default` lets the backend use its configured
+ * `AI_PROVIDER`; `claude` / `openai` are forwarded as `X-AI-Provider` per
+ * request. Persisted in localStorage so the choice survives reloads.
+ */
+type ProviderChoice = "default" | AIProvider;
+
+const PROVIDER_STORAGE_KEY = "ai.provider";
+
+const PROVIDER_OPTIONS: { id: ProviderChoice; label: string }[] = [
+  { id: "default", label: "Default" },
+  { id: "claude", label: "Claude" },
+  { id: "openai", label: "OpenAI" },
+];
+
+function isProviderChoice(value: unknown): value is ProviderChoice {
+  return value === "default" || value === "claude" || value === "openai";
+}
+
+const PROVIDER_LABEL: Record<AIProvider, string> = {
+  claude: "Claude",
+  openai: "OpenAI",
+};
+
+/**
+ * Build the small subtitle under "AI assistant" in the chat header.
+ *
+ * When the user has chosen a non-default provider, render the model name for
+ * that provider as reported by `/ai/health.providers[<provider>]` and tag it
+ * with `(override)` so it is obvious the banner is reflecting the picker, not
+ * the server default. Otherwise we show the top-level `health.model` (which
+ * mirrors `AI_PROVIDER` on the server).
+ *
+ * The backend probes both providers on every health call, so we never have to
+ * hardcode model strings here.
+ */
+function headerSubtitle(
+  provider: ProviderChoice,
+  health: AIHealthResponse | null,
+): React.ReactNode {
+  const mutationLabel = health
+    ? health.allow_mutations
+      ? "read/write"
+      : "read-only"
+    : null;
+
+  if (provider !== "default") {
+    const info = health?.providers?.[provider];
+    if (info?.status === "ok") {
+      return (
+        <>
+          {info.model}
+          <span className="text-accent/80"> (override)</span>
+          {mutationLabel ? ` · ${mutationLabel}` : ""}
+        </>
+      );
+    }
+    if (info?.status === "unconfigured") {
+      return (
+        <>
+          {PROVIDER_LABEL[provider]}
+          <span className="text-accent/80"> (override)</span>
+          {" · API key not set"}
+        </>
+      );
+    }
+    // Health not loaded yet, or older backend without `providers` map.
+    return (
+      <>
+        {PROVIDER_LABEL[provider]}
+        <span className="text-accent/80"> (override)</span>
+        {health ? "" : " · checking…"}
+      </>
+    );
+  }
+
+  if (health?.status === "ok") {
+    return `${health.model} · ${mutationLabel}`;
+  }
+  if (health?.status === "unconfigured") {
+    return "ANTHROPIC_API_KEY not set";
+  }
+  return "checking…";
+}
+
+/**
  * Right-hand column: chat with Claude. Every message is posted to
  * /ai/chat with the currently-selected board_id as scoping context.
  * The assistant's tool-call log is rendered under each reply for
@@ -62,6 +148,7 @@ export function AIChat({ boardId, onAfterAIMutation }: Props) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState<AIHealthResponse | null>(null);
+  const [provider, setProvider] = useState<ProviderChoice>("default");
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,6 +157,26 @@ export function AIChat({ boardId, onAfterAIMutation }: Props) {
       .then(setHealth)
       .catch(() => setHealth(null));
   }, []);
+
+  // Restore the saved provider choice once on mount. localStorage is wrapped
+  // in try/catch because it can throw in private-browsing modes.
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
+      if (isProviderChoice(stored)) setProvider(stored);
+    } catch {
+      /* ignore storage errors */
+    }
+  }, []);
+
+  function chooseProvider(next: ProviderChoice) {
+    setProvider(next);
+    try {
+      window.localStorage.setItem(PROVIDER_STORAGE_KEY, next);
+    } catch {
+      /* ignore storage errors */
+    }
+  }
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({
@@ -85,10 +192,13 @@ export function AIChat({ boardId, onAfterAIMutation }: Props) {
     setTurns((t) => [...t, { role: "user", text: prompt }]);
     setBusy(true);
     try {
-      const resp: AIChatResponse = await api.aiChat({
-        prompt,
-        board_id: boardId || undefined,
-      });
+      const resp: AIChatResponse = await api.aiChat(
+        {
+          prompt,
+          board_id: boardId || undefined,
+        },
+        provider === "default" ? undefined : provider,
+      );
       setTurns((t) => [
         ...t,
         {
@@ -123,13 +233,7 @@ export function AIChat({ boardId, onAfterAIMutation }: Props) {
           <div>
             <div className="text-sm font-semibold">AI assistant</div>
             <div className="text-[11px] text-muted">
-              {health?.status === "ok"
-                ? `${health.model} · ${
-                    health.allow_mutations ? "read/write" : "read-only"
-                  }`
-                : health?.status === "unconfigured"
-                  ? "ANTHROPIC_API_KEY not set"
-                  : "checking…"}
+              {headerSubtitle(provider, health)}
             </div>
           </div>
         </div>
@@ -185,9 +289,16 @@ export function AIChat({ boardId, onAfterAIMutation }: Props) {
             <Send size={14} /> Send
           </button>
         </div>
-        <div className="mt-2 text-[11px] text-muted">
-          Enter to send · Shift+Enter for newline · prompts and replies are
-          scrubbed for API keys and emails before hitting Claude.
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <ProviderPicker
+            value={provider}
+            onChange={chooseProvider}
+            disabled={busy}
+          />
+          <div className="text-[11px] text-muted text-right">
+            Enter to send · Shift+Enter for newline · prompts and replies are
+            scrubbed for API keys and emails before hitting the model.
+          </div>
         </div>
       </footer>
     </section>
@@ -197,6 +308,50 @@ export function AIChat({ boardId, onAfterAIMutation }: Props) {
 // ---------------------------------------------------------------------- //
 // sub-components
 // ---------------------------------------------------------------------- //
+
+function ProviderPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: ProviderChoice;
+  onChange: (next: ProviderChoice) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] uppercase tracking-wider text-muted">
+        Model
+      </span>
+      <div
+        role="radiogroup"
+        aria-label="AI provider"
+        className="inline-flex bg-bg border border-border rounded-md p-0.5"
+      >
+        {PROVIDER_OPTIONS.map((opt) => {
+          const active = value === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(opt.id)}
+              disabled={disabled}
+              className={`text-[11px] px-2 py-1 rounded transition-colors disabled:opacity-50 ${
+                active
+                  ? "bg-accent/20 text-accent border border-accent/40"
+                  : "text-muted border border-transparent hover:text-gray-200"
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function EmptyState({
   boardScoped,
